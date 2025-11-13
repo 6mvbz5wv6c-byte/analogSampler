@@ -1,3 +1,6 @@
+#Stover - November 13, 2025
+#Differential sampling with gain of 4
+
 #!/usr/bin/env python3
 import os, json, time, asyncio, signal, traceback, base64
 from datetime import datetime, timezone
@@ -8,7 +11,7 @@ from azure.iot.device import Message
 
 SAMPLE_RATE_HZ = int(os.getenv("SAMPLE_RATE_HZ", "1000"))
 FRAME_SAMPLES  = int(os.getenv("FRAME_SAMPLES", "1000"))   # 1s of data at 1 kSPS
-CHANNEL        = int(os.getenv("CHANNEL", "0"))
+DIFF_CHANNEL   = int(os.getenv("DIFF_CHANNEL", "0"))
 VREF           = float(os.getenv("VREF", "5.0"))
 OUTPUT_NAME    = "telemetry"  # hard-coded to match IoT Edge route
 DEVICE_ID      = os.getenv("IOTEDGE_DEVICEID", "UNKNOWN_DEVICE")
@@ -104,7 +107,7 @@ async def sampler_polling(adc: ADS1256.ADS1256, queue: asyncio.Queue, running_fl
         # Capture FRAME_SAMPLES samples as fast as the ADC delivers them
         for i in range(FRAME_SAMPLES):
             try:
-                raw = adc.ADS1256_GetChannalValue(CHANNEL)
+                raw = adc.ADS1256_GetChannalValue(DIFF_CHANNEL)
             except Exception:
                 traceback.print_exc()
                 raw = 0
@@ -185,10 +188,13 @@ async def main():
     if rc != 0:
         raise RuntimeError("ADS1256 init failed")
 
+    # sets reading to differential input mode between selected DIFF_CHANNEL
+    ADS1256.ScanMode = 1
+
     # Configure data rate / gain if supported
     try:
         adc.ADS1256_ConfigADC(
-            ADS1256.ADS1256_GAIN_E['ADS1256_GAIN_1'],
+            ADS1256.ADS1256_GAIN_E['ADS1256_GAIN_4'],
             ADS1256.ADS1256_DRATE_E['ADS1256_1000SPS']
         )
     except Exception:
