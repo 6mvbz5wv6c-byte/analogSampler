@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, time, asyncio, signal, traceback
+import os, json, time, asyncio, signal, traceback, base64
 from datetime import datetime, timezone
 import numpy as np
 import ADS1256
@@ -20,20 +20,43 @@ def utc_us_now() -> int:
 
 
 async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
+    """
+    Take frames from the queue and send them as JSON with Base64-encoded int32 samples.
+
+    Body JSON structure:
+
+    {
+        "deviceId": "...",
+        "startUs":  ...,
+        "endUs":    ...,
+        "sampleRateHz": 1000,
+        "frameSamples": 1000,
+        "format":  "int32-le-base64-v1",
+        "vref":    5.0,
+        "samplesB64": "<base64 of int32 little-endian samples>"
+    }
+    """
     while True:
         buf, start_us, end_us = await queue.get()
 
-        payload = {
-            "deviceId": DEVICE_ID,
-            "startUs": int(start_us),
-            "endUs": int(end_us),
-            "samples": buf.tolist(),
-        }
-
         try:
+            # buf is np.int32; make sure it's little-endian and pack to bytes
+            samples_bytes = buf.astype("<i4", copy=False).tobytes()
+            samples_b64 = base64.b64encode(samples_bytes).decode("ascii")
+
+            payload = {
+                "deviceId": DEVICE_ID,
+                "startUs": int(start_us),
+                "endUs": int(end_us),
+                "sampleRateHz": SAMPLE_RATE_HZ,
+                "frameSamples": int(len(buf)),
+                "format": "int32-le-base64-v1",
+                "vref": VREF,
+                "samplesB64": samples_b64,
+            }
+
             body = json.dumps(payload)
-        except Exception as e:
-            # Serialization failure: drop frame, continue
+        except Exception:
             traceback.print_exc()
             queue.task_done()
             continue
@@ -42,10 +65,12 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
         msg.content_type = "application/json"
         msg.content_encoding = "utf-8"
 
+        # Optional: properties for routing/filtering
+        msg.custom_properties["payloadFormat"] = "ads1256-int32-le-base64-v1"
+
         try:
             await client.send_message_to_output(msg, OUTPUT_NAME)
         except Exception:
-            # Network / IoT Edge issue – log and continue
             traceback.print_exc()
             await asyncio.sleep(0.1)
         finally:
@@ -53,12 +78,15 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
 
 
 async def sampler_polling(adc: ADS1256.ADS1256, queue: asyncio.Queue, running_flag: asyncio.Event):
-    scale = VREF / 0x7FFFFF
+    """
+    Capture raw ADS1256 counts into int32 buffers.
+    Timing is derived from sample rate + frame index.
+    """
     Ts_us = int(1_000_000 / SAMPLE_RATE_HZ)  # microseconds per sample
 
-    # Ping-pong buffers
-    buf_a = np.zeros(FRAME_SAMPLES, dtype=np.float32)
-    buf_b = np.zeros(FRAME_SAMPLES, dtype=np.float32)
+    # Ping-pong buffers: raw ADC counts as int32
+    buf_a = np.zeros(FRAME_SAMPLES, dtype=np.int32)
+    buf_b = np.zeros(FRAME_SAMPLES, dtype=np.int32)
     current_buf = buf_a
     alt_buf = buf_b
 
@@ -81,10 +109,9 @@ async def sampler_polling(adc: ADS1256.ADS1256, queue: asyncio.Queue, running_fl
                 traceback.print_exc()
                 raw = 0
 
-            current_buf[i] = raw * scale
+            current_buf[i] = int(raw)
 
-            # No time.sleep() here; assume the ADS1256 DRATE setting
-            # controls the actual sampling period.
+            # No time.sleep(): rely on ADS1256 DRATE timing
 
         # Hand buffer to publisher and swap
         try:
@@ -94,7 +121,6 @@ async def sampler_polling(adc: ADS1256.ADS1256, queue: asyncio.Queue, running_fl
 
         current_buf, alt_buf = alt_buf, current_buf
         frame_index += 1
-
 
 
 async def twin_control(client: IoTHubModuleClient, running_flag: asyncio.Event):
@@ -166,7 +192,6 @@ async def main():
             ADS1256.ADS1256_DRATE_E['ADS1256_1000SPS']
         )
     except Exception:
-        # If not supported, ignore
         traceback.print_exc()
 
     # IoT Hub module client
