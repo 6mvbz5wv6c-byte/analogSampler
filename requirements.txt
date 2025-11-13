@@ -1,0 +1,4 @@
+azure-iot-device==2.13.0
+numpy
+RPi.GPIO==0.7.1
+spidev==3.6
