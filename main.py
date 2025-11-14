@@ -116,9 +116,11 @@ async def sampler_polling(adc: ADS1256.ADS1256, queue: asyncio.Queue, running_fl
 
             # No time.sleep(): rely on ADS1256 DRATE timing
 
-        # Hand buffer to publisher and swap
+        # Hand a copy of the buffer to the publisher so it cannot be mutated
+        # by the next capture loop while it is being Base64-encoded.
         try:
-            await queue.put((current_buf, start_us, end_us))
+           # await queue.put((current_buf, start_us, end_us))
+            await queue.put((current_buf.copy(), start_us, end_us))
         except Exception:
             traceback.print_exc()
 
