@@ -173,8 +173,19 @@ class ADS1256:
         read = (buf[0]<<16) & 0xff0000
         read |= (buf[1]<<8) & 0xff00
         read |= (buf[2]) & 0xff
-        if (read & 0x800000):
-            read &= 0xF000000
+        
+      # old method that only captured positive samples
+        # if (read & 0x800000): 
+        #    read &= 0xF000000
+
+      # new method to capture negative values. need to offset 2's compliment by 2^24 (0x1000000) if negative sign bit is set
+        ADC_BITS = 24
+        SIGN_BIT = 1 << (ADC_BITS - 1)   # 0x800000
+        FULL_RANGE = 1 << ADC_BITS       # 0x1000000
+        
+        if read & SIGN_BIT:              # only true for negative codes
+          read -= FULL_RANGE
+  
         return read
  
     def ADS1256_GetChannalValue(self, Channel):
