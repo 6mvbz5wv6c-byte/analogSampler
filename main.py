@@ -16,6 +16,7 @@ VREF           = float(os.getenv("VREF", "5.0"))
 OUTPUT_NAME    = "telemetry"  # hard-coded to match IoT Edge route
 DEVICE_ID      = os.getenv("IOTEDGE_DEVICEID", "UNKNOWN_DEVICE")
 TWIN_FLAG_KEY  = "analog_sampling_enabled"
+PAYLOAD_FORMAT = os.getenv("PAYLOAD_FORMAT", "int32-le-base64-v1").strip().lower()
 
 
 def utc_us_now() -> int:
@@ -24,7 +25,12 @@ def utc_us_now() -> int:
 
 async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
     """
-    Take frames from the queue and send them as JSON with Base64-encoded int32 samples.
+    Take frames from the queue and send them as JSON.
+
+    The payload format is controlled by PAYLOAD_FORMAT.  Set it to
+    "int32-csv-v1" to emit the raw signed counts as a comma-separated
+    ASCII string for debugging, or leave it at the default of
+    "int32-le-base64-v1" for compact binary delivery.
 
     Body JSON structure:
 
@@ -43,9 +49,18 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
         buf, start_us, end_us = await queue.get()
 
         try:
-            # buf is np.int32; make sure it's little-endian and pack to bytes
-            samples_bytes = buf.astype("<i4", copy=False).tobytes()
-            samples_b64 = base64.b64encode(samples_bytes).decode("ascii")
+            format_name = PAYLOAD_FORMAT
+
+            if format_name == "int32-le-base64-v1":
+                # buf is np.int32; make sure it's little-endian and pack to bytes
+                samples_bytes = buf.astype("<i4", copy=False).tobytes()
+                payload_samples_key = "samplesB64"
+                payload_samples_value = base64.b64encode(samples_bytes).decode("ascii")
+            elif format_name == "int32-csv-v1":
+                payload_samples_key = "samplesCsv"
+                payload_samples_value = ",".join(str(int(v)) for v in buf.tolist())
+            else:
+                raise ValueError(f"Unsupported PAYLOAD_FORMAT '{PAYLOAD_FORMAT}'")
 
             payload = {
                 "deviceId": DEVICE_ID,
@@ -53,9 +68,9 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
                 "endUs": int(end_us),
                 "sampleRateHz": SAMPLE_RATE_HZ,
                 "frameSamples": int(len(buf)),
-                "format": "int32-le-base64-v1",
+                "format": format_name,
                 "vref": VREF,
-                "samplesB64": samples_b64,
+                payload_samples_key: payload_samples_value,
             }
 
             body = json.dumps(payload)
@@ -69,7 +84,7 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
         msg.content_encoding = "utf-8"
 
         # Optional: properties for routing/filtering
-        msg.custom_properties["payloadFormat"] = "ads1256-int32-le-base64-v1"
+        msg.custom_properties["payloadFormat"] = format_name
 
         try:
             await client.send_message_to_output(msg, OUTPUT_NAME)
@@ -116,9 +131,15 @@ async def sampler_polling(adc: ADS1256.ADS1256, queue: asyncio.Queue, running_fl
 
             # No time.sleep(): rely on ADS1256 DRATE timing
 
-        # Hand buffer to publisher and swap
+        # Hand a copy of the buffer to the publisher so it cannot be mutated
+        # by the next capture loop while it is being Base64-encoded.  The
+        # sampler, publisher, and IoT upload coroutines are all running
+        # concurrently; without this copy the next sampling pass would
+        # overwrite "current_buf" while the publisher was still reading from it,
+        # corrupting the Base64 payload with a mix of the previous and new
+        # frames.
         try:
-            await queue.put((current_buf, start_us, end_us))
+            await queue.put((current_buf.copy(), start_us, end_us))
         except Exception:
             traceback.print_exc()
 

@@ -173,8 +173,12 @@ class ADS1256:
         read = (buf[0]<<16) & 0xff0000
         read |= (buf[1]<<8) & 0xff00
         read |= (buf[2]) & 0xff
-        if (read & 0x800000):
-            read &= 0xF000000
+
+        # Convert the raw 24-bit two's complement value to a signed integer so that
+        # both the positive and negative portions of the waveform are preserved.
+        if read & 0x800000:
+            read -= 1 << 24
+
         return read
  
     def ADS1256_GetChannalValue(self, Channel):
