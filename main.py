@@ -16,7 +16,7 @@ VREF           = float(os.getenv("VREF", "5.0"))
 OUTPUT_NAME    = "telemetry"  # hard-coded to match IoT Edge route
 DEVICE_ID      = os.getenv("IOTEDGE_DEVICEID", "UNKNOWN_DEVICE")
 TWIN_FLAG_KEY  = "analog_sampling_enabled"
-
+SINE_FREQ_HZ   = 22.0
 
 def utc_us_now() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1_000_000)
@@ -25,6 +25,10 @@ def utc_us_now() -> int:
 async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
     """
     Take frames from the queue and send them as JSON with Base64-encoded int32 samples.
+
+    Added Nov 17
+    A synthetic 22 Hz sine wave (1 kSPS) is included as Base64-encoded float32 values
+    in the "dataB64" field to simulate a second sensor stream.
 
     Body JSON structure:
 
@@ -36,9 +40,15 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
         "frameSamples": 1000,
         "format":  "int32-le-base64-v1",
         "vref":    5.0,
-        "samplesB64": "<base64 of int32 little-endian samples>"
+        "samplesB64": "<base64 of int32 little-endian samples>",
+        "format":  "int32-le-base64-v1",
+        "dataB64": "<base64 of float32 little-endian sine samples>",
+        "dataFormat": "float32-le-base64-v1"
     }
     """
+
+    sine_phase_sample = 0  # running sample counter for sine generation
+
     while True:
         buf, start_us, end_us = await queue.get()
 
@@ -47,15 +57,26 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
             samples_bytes = buf.astype("<i4", copy=False).tobytes()
             samples_b64 = base64.b64encode(samples_bytes).decode("ascii")
 
+            # Generate simulated sine wave at SINE_FREQ_HZ
+            # ~~~~ for testing only ~~~~~
+            sample_indices = sine_phase_sample + np.arange(len(buf))
+            sine_wave = np.sin(2 * np.pi * SINE_FREQ_HZ * sample_indices / SAMPLE_RATE_HZ)
+            sine_bytes = sine_wave.astype("<f4", copy=False).tobytes()
+            sine_b64 = base64.b64encode(sine_bytes).decode("ascii")
+            sine_phase_sample += len(buf)
+            # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
             payload = {
                 "deviceId": DEVICE_ID,
                 "startUs": int(start_us),
                 "endUs": int(end_us),
                 "sampleRateHz": SAMPLE_RATE_HZ,
                 "frameSamples": int(len(buf)),
-                "format": "int32-le-base64-v1",
                 "vref": VREF,
                 "samplesB64": samples_b64,
+                "format": "int32-le-base64-v1",
+                "dataB64": sine_b64,
+                "dataFormat": "float32-le-base64-v1",
             }
 
             body = json.dumps(payload)
