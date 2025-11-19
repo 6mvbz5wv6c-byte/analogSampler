@@ -2,8 +2,11 @@
 #Differential sampling with gain of 4
 
 #!/usr/bin/env python3
-import os, json, time, asyncio, signal, traceback, base64
+import os, json, time, asyncio, signal, traceback, base64, random
 from datetime import datetime, timezone
+import socket
+import struct
+
 import numpy as np
 import ADS1256
 from azure.iot.device.aio import IoTHubModuleClient
@@ -17,6 +20,21 @@ OUTPUT_NAME    = "telemetry"  # hard-coded to match IoT Edge route
 DEVICE_ID      = os.getenv("IOTEDGE_DEVICEID", "UNKNOWN_DEVICE")
 TWIN_FLAG_KEY  = "analog_sampling_enabled"
 SINE_FREQ_HZ   = 22.0
+
+#GPS_LAT_PLACEHOLDER = 36.13706
+#GPS_LONG_PLACEHOLDER = -94.14972
+#BATTERY_PLACEHOLDER = 7.2
+
+# Web ui variables
+UDP_TARGET_HOST = os.getenv("WEBUI_HOST", "webui")  # Docker hostname of web module
+UDP_TARGET_PORT = int(os.getenv("WEBUI_PORT", "9000"))
+
+UDP_HEADER_FMT = "<2sBBIQQfI"  # magic, version, codec, frame_index, start_us, end_us, sr, n
+UDP_HEADER_SIZE = struct.calcsize(UDP_HEADER_FMT)
+
+udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_target = (UDP_TARGET_HOST, UDP_TARGET_PORT)
+udp_frame_counter = 0
 
 def utc_us_now() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1_000_000)
@@ -90,7 +108,9 @@ async def publisher(client: IoTHubModuleClient, queue: asyncio.Queue):
         msg.content_encoding = "utf-8"
 
         # Optional: properties for routing/filtering
-        msg.custom_properties["payloadFormat"] = "ads1256-int32-le-base64-v1"
+       # msg.custom_properties["GPS_Latitude"] = str(GPS_LAT_PLACEHOLDER)
+       # msg.custom_properties["GPS_Longitude"] = str(GPS_LONG_PLACEHOLDER)
+       # msg.custom_properties["Battery_Voltage"] = f"{random.uniform(BATTERY_PLACEHOLDER - 0.1, BATTERY_PLACEHOLDER + 0.1):.2f}"
 
         try:
             await client.send_message_to_output(msg, OUTPUT_NAME)
@@ -140,11 +160,14 @@ async def sampler_polling(adc: ADS1256.ADS1256, queue: asyncio.Queue, running_fl
         # Hand a copy of the buffer to the publisher so it cannot be mutated
         # by the next capture loop while it is being Base64-encoded.
         try:
-           # await queue.put((current_buf, start_us, end_us))
-            await queue.put((current_buf.copy(), start_us, end_us))
+            frame_copy = current_buf.copy()
+            await queue.put((frame_copy, start_us, end_us))
         except Exception:
             traceback.print_exc()
 
+        # Send UDP tap for local web visualization (non-blocking best-effort)
+        send_udp_frame(current_buf, start_us, end_us)
+        
         current_buf, alt_buf = alt_buf, current_buf
         frame_index += 1
 
@@ -191,6 +214,43 @@ async def twin_control(client: IoTHubModuleClient, running_flag: asyncio.Event):
                 await client.patch_twin_reported_properties({TWIN_FLAG_KEY: enabled})
             except Exception:
                 traceback.print_exc()
+
+def send_udp_frame(buf: np.ndarray, start_us: int, end_us: int):
+    """
+    Fire-and-forget UDP frame for local visualization.
+
+    Frame format:
+      header: <2sBBIQQfI
+      payload: n * int32 little-endian samples
+    """
+    global udp_frame_counter
+
+    frame_index = udp_frame_counter
+    udp_frame_counter += 1
+
+    sample_rate_hz = float(SAMPLE_RATE_HZ)
+    frame_samples = int(len(buf))
+
+    header = struct.pack(
+        UDP_HEADER_FMT,
+        b"PG",             # magic "Pigboy Geophone"
+        1,                 # version
+        0,                 # codec 0 = int32 LE
+        frame_index,
+        int(start_us),
+        int(end_us),
+        sample_rate_hz,
+        frame_samples,
+    )
+
+    payload = buf.astype("<i4", copy=False).tobytes()
+    packet = header + payload
+
+    try:
+        udp_sock.sendto(packet, udp_target)
+    except OSError:
+        # Visualization-only path; ignore failures
+        pass
 
 
 async def main():
