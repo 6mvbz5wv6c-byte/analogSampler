@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pigboy Geophone Oscilloscope</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      background: #111;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      padding: 8px 12px;
+      background: #222;
+      font-size: 14px;
+    }
+    #status {
+      float: right;
+      font-weight: bold;
+    }
+    #container {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      border: 1px solid #444;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    Pigboy Geophone Monitor
+    <span id="status">Connecting...</span>
+  </header>
+  <div id="container">
+    <canvas id="scope" width="1000" height="400"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('scope');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+
+    function drawTrace(t, geo) {
+      if (!t || t.length === 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+
+      const w = canvas.width;
+      const h = canvas.height;
+
+      // Clear
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, w, h);
+
+      // Determine min/max for auto-scale
+      let ymin = Infinity, ymax = -Infinity;
+      for (let i = 0; i < geo.length; i++) {
+        const v = geo[i];
+        if (v < ymin) ymin = v;
+        if (v > ymax) ymax = v;
+      }
+      if (ymin === ymax) {
+        ymin -= 1;
+        ymax += 1;
+      }
+
+      const t0 = t[0];
+      const t1 = t[t.length - 1];
+      const dt = t1 - t0 || 1;
+
+      // Draw grid
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 100) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+      }
+      for (let y = 0; y <= h; y += 100) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+      }
+      ctx.stroke();
+
+      // Draw trace
+      ctx.strokeStyle = '#0f0';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < geo.length; i++) {
+        const tx = (t[i] - t0) / dt;  // 0..1
+        const ty = (geo[i] - ymin) / (ymax - ymin); // 0..1
+        const x = tx * w;
+        const y = h - ty * h;
+
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    function connectWS() {
+      const proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+      const wsUrl = proto + location.host + '/ws';
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        statusEl.textContent = 'Connected';
+        statusEl.style.color = '#0f0';
+      };
+
+      ws.onclose = () => {
+        statusEl.textContent = 'Disconnected, retrying...';
+        statusEl.style.color = '#f80';
+        setTimeout(connectWS, 2000);
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = 'Error';
+        statusEl.style.color = '#f00';
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          drawTrace(msg.t, msg.geo);
+        } catch (e) {
+          console.error('Bad message', e);
+        }
+      };
+    }
+
+    connectWS();
+  </script>
+</body>
+</html>
