@@ -40,12 +40,12 @@ class RingBuffer:
 
     def snapshot(self):
         if not self.t_abs:
-            return np.array([]), np.array([])
+            return np.array([]), np.array([]), None
         t = np.array(self.t_abs, dtype=np.float64)
         t0 = t[0]
         t_rel = t - t0
         geo = np.array(self.geo, dtype=np.float32)
-        return t_rel, geo
+        return t_rel, geo, t0
 
 
 buf = RingBuffer(max_duration_s=45.0)
@@ -95,7 +95,7 @@ async def ws_handler(request):
     try:
         while True:
             await asyncio.sleep(0.1)  # 10 Hz update
-            t, geo = buf.snapshot()
+            t, geo, t0 = buf.snapshot()
             if t.size == 0:
                 continue
 
@@ -105,8 +105,9 @@ async def ws_handler(request):
             g_ds = geo[::step]
 
             await ws.send_json({
+                "t0": float(t0),
                 "t": t_ds.tolist(),
-                "geo": g_ds.tolist()
+                "geo": g_ds.tolist(),
             })
     except asyncio.CancelledError:
         pass
