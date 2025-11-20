@@ -17,95 +17,230 @@
       padding: 8px 12px;
       background: #222;
       font-size: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
     #status {
-      float: right;
       font-weight: bold;
     }
     #container {
       flex: 1;
       display: flex;
-      justify-content: center;
-      align-items: center;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
     }
+    #controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      color: #ccc;
+      font-size: 13px;
+    }
+    button {
+      background: #333;
+      color: #eee;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+    button:hover { background: #444; }
     canvas {
       border: 1px solid #444;
       background: #000;
+      width: 100%;
+      height: 420px;
     }
   </style>
 </head>
 <body>
   <header>
-    Pigboy Geophone Monitor
+    <span>Pigboy Geophone Monitor</span>
     <span id="status">Connecting...</span>
   </header>
   <div id="container">
-    <canvas id="scope" width="1000" height="400"></canvas>
+    <div id="controls">
+      <button id="follow">Jump to Live</button>
+      <span>Scroll to zoom, drag to pan. Buffer: 45 s.</span>
+      <span id="view"></span>
+    </div>
+    <canvas id="scope" width="1200" height="420"></canvas>
   </div>
 
   <script>
     const canvas = document.getElementById('scope');
     const ctx = canvas.getContext('2d');
     const statusEl = document.getElementById('status');
+    const viewEl = document.getElementById('view');
+    const followBtn = document.getElementById('follow');
 
-    function drawTrace(t, geo) {
-      if (!t || t.length === 0) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        return;
-      }
+    const BUFFER_SECONDS = 45;
+    const DEFAULT_VIEW_SECONDS = 45;
+    const Y_SCALE = 500000; // constant vertical scale in ADC counts
 
-      const w = canvas.width;
-      const h = canvas.height;
+    let tData = [];
+    let geoData = [];
+    let viewStart = 0;
+    let viewSpan = DEFAULT_VIEW_SECONDS;
+    let followLive = true;
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartView = 0;
 
-      // Clear
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, w, h);
+    function clampView() {
+      if (tData.length === 0) return;
+      const minT = tData[0];
+      const maxT = tData[tData.length - 1];
+      const span = Math.min(viewSpan, BUFFER_SECONDS, Math.max(maxT - minT, DEFAULT_VIEW_SECONDS));
+      viewSpan = Math.max(0.5, Math.min(span, BUFFER_SECONDS));
 
-      // Determine min/max for auto-scale
-      let ymin = Infinity, ymax = -Infinity;
-      for (let i = 0; i < geo.length; i++) {
-        const v = geo[i];
-        if (v < ymin) ymin = v;
-        if (v > ymax) ymax = v;
-      }
-      if (ymin === ymax) {
-        ymin -= 1;
-        ymax += 1;
-      }
+      const maxStart = maxT - viewSpan;
+      viewStart = Math.max(minT, Math.min(viewStart, maxStart));
+    }
 
-      const t0 = t[0];
-      const t1 = t[t.length - 1];
-      const dt = t1 - t0 || 1;
+    function formatRange() {
+      const startSec = viewStart.toFixed(2);
+      const endSec = (viewStart + viewSpan).toFixed(2);
+      const spanSec = viewSpan.toFixed(2);
+      viewEl.textContent = `View: ${startSec}s – ${endSec}s (Δ ${spanSec}s)`;
+    }
 
-      // Draw grid
+    function biasAndScale(values) {
+      if (!values.length) return [];
+      const mean = values.reduce((acc, v) => acc + v, 0) / values.length;
+      return values.map((v) => v - mean);
+    }
+
+    function drawGrid(w, h) {
       ctx.strokeStyle = '#222';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let x = 0; x <= w; x += 100) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, h);
+      const gridX = 100;
+      const gridY = 80;
+      for (let x = 0; x <= w; x += gridX) {
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, h);
       }
-      for (let y = 0; y <= h; y += 100) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-      }
-      ctx.stroke();
-
-      // Draw trace
-      ctx.strokeStyle = '#0f0';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      for (let i = 0; i < geo.length; i++) {
-        const tx = (t[i] - t0) / dt;  // 0..1
-        const ty = (geo[i] - ymin) / (ymax - ymin); // 0..1
-        const x = tx * w;
-        const y = h - ty * h;
-
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+      for (let y = 0; y <= h; y += gridY) {
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(w, y + 0.5);
       }
       ctx.stroke();
     }
+
+    function drawTrace() {
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, w, h);
+
+      if (!tData.length) {
+        formatRange();
+        return;
+      }
+
+      clampView();
+      formatRange();
+      drawGrid(w, h);
+
+      const yMid = h / 2;
+      const yScalePx = (h * 0.45) / Y_SCALE;
+
+      // Center baseline
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, yMid + 0.5);
+      ctx.lineTo(w, yMid + 0.5);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#0f0';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+
+      let started = false;
+      for (let i = 0; i < tData.length; i++) {
+        const t = tData[i];
+        if (t < viewStart || t > viewStart + viewSpan) continue;
+
+        const xNorm = (t - viewStart) / viewSpan;
+        const x = xNorm * w;
+        const y = yMid - geoData[i] * yScalePx;
+
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+
+      if (started) {
+        ctx.stroke();
+      }
+    }
+
+    function setLiveView() {
+      if (!tData.length) return;
+      const maxT = tData[tData.length - 1];
+      viewSpan = Math.min(viewSpan, BUFFER_SECONDS);
+      viewStart = Math.max(tData[0], maxT - viewSpan);
+      followLive = true;
+      drawTrace();
+    }
+
+    function handleNewData(t, geo) {
+      tData = t;
+      geoData = biasAndScale(geo);
+
+      if (followLive) {
+        viewSpan = Math.min(Math.max(viewSpan, DEFAULT_VIEW_SECONDS), BUFFER_SECONDS);
+        const maxT = tData[tData.length - 1];
+        viewStart = Math.max(tData[0], maxT - viewSpan);
+      }
+      drawTrace();
+    }
+
+    canvas.addEventListener('wheel', (event) => {
+      if (!tData.length) return;
+      event.preventDefault();
+      const zoomPoint = viewStart + (event.offsetX / canvas.width) * viewSpan;
+      const factor = event.deltaY < 0 ? 0.85 : 1.15;
+      viewSpan = Math.min(BUFFER_SECONDS, Math.max(0.5, viewSpan * factor));
+      viewStart = zoomPoint - (zoomPoint - viewStart) * factor;
+      followLive = false;
+      clampView();
+      drawTrace();
+    });
+
+    canvas.addEventListener('mousedown', (event) => {
+      if (!tData.length) return;
+      isDragging = true;
+      dragStartX = event.clientX;
+      dragStartView = viewStart;
+      followLive = false;
+    });
+
+    window.addEventListener('mousemove', (event) => {
+      if (!isDragging || !tData.length) return;
+      const dx = event.clientX - dragStartX;
+      const deltaT = (dx / canvas.width) * viewSpan;
+      viewStart = dragStartView - deltaT;
+      clampView();
+      drawTrace();
+    });
+
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+
+    followBtn.addEventListener('click', () => {
+      viewSpan = Math.min(BUFFER_SECONDS, Math.max(viewSpan, DEFAULT_VIEW_SECONDS));
+      setLiveView();
+    });
 
     function connectWS() {
       const proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
@@ -131,7 +266,7 @@
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          drawTrace(msg.t, msg.geo);
+          handleNewData(msg.t, msg.geo);
         } catch (e) {
           console.error('Bad message', e);
         }
@@ -139,6 +274,7 @@
     }
 
     connectWS();
+    drawTrace();
   </script>
 </body>
 </html>

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
+import contextlib
+import os
 import socket
 import struct
 from collections import deque
@@ -14,14 +16,27 @@ UDP_HEADER_SIZE = struct.calcsize(UDP_HEADER_FMT)
 
 # Ring buffer for oscilloscope view
 class RingBuffer:
-    def __init__(self, max_samples=10_000):
-        self.max_samples = max_samples
-        self.t_abs = deque(maxlen=max_samples)
-        self.geo = deque(maxlen=max_samples)
+    """Ring buffer constrained by duration instead of sample count."""
+
+    def __init__(self, max_duration_s: float):
+        self.max_duration_s = float(max_duration_s)
+        self.t_abs = deque()
+        self.geo = deque()
+
+    def _prune_old(self):
+        if not self.t_abs:
+            return
+
+        newest = self.t_abs[-1]
+        cutoff = newest - self.max_duration_s
+        while self.t_abs and self.t_abs[0] < cutoff:
+            self.t_abs.popleft()
+            self.geo.popleft()
 
     def add_frame(self, t_abs, geo):
         self.t_abs.extend(t_abs)
         self.geo.extend(geo)
+        self._prune_old()
 
     def snapshot(self):
         if not self.t_abs:
@@ -33,7 +48,7 @@ class RingBuffer:
         return t_rel, geo
 
 
-buf = RingBuffer(max_samples=20_000)
+buf = RingBuffer(max_duration_s=45.0)
 
 
 async def udp_receiver():
