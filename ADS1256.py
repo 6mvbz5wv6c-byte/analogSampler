@@ -105,14 +105,39 @@ class ADS1256:
         if(i >= 400000):
             print ("Time Out ...\r\n")
         
-        
+     # Old chip ID read function.. Occasionally issues returning the wrong chip ID causing sample loop to fail
+     #   def ADS1256_ReadChipID(self):
+     #       self.ADS1256_WaitDRDY()
+     #       id = self.ADS1256_Read_data(REG_E['REG_STATUS'])
+     #       id = id[0] >> 4
+     #       # print 'ID',id
+     #       return id
+
     def ADS1256_ReadChipID(self):
+        # Wait for DRDY low so the device is ready
         self.ADS1256_WaitDRDY()
-        id = self.ADS1256_Read_data(REG_E['REG_STATUS'])
-        id = id[0] >> 4
-        # print 'ID',id
-        return id
-        
+
+        # Start SPI transaction
+        config.digital_write(self.cs_pin, GPIO.LOW)
+
+        # Send RREG command for STATUS register + count (1 register: N-1 = 0)
+        config.spi_writebyte([CMD['CMD_RREG'] | REG_E['REG_STATUS'], 0x00])
+
+        # Small t6 delay before reading STATUS
+        config.delay_ms(1)
+
+        status_bytes = config.spi_readbytes(1)
+
+        # End SPI transaction
+        config.digital_write(self.cs_pin, GPIO.HIGH)
+
+        status = status_bytes[0]
+        chip_id = (status >> 4) & 0x0F
+        print(f"STATUS=0x{status:02X}, chip_id=0x{chip_id:X}")
+        return chip_id
+
+
+
     #The configuration parameters of ADC, gain and data rate
     def ADS1256_ConfigADC(self, gain, drate):
         self.ADS1256_WaitDRDY()
@@ -150,27 +175,31 @@ class ADS1256:
         global ScanMode
         ScanMode = Mode
 
-def ADS1256_init(self):
-    if (config.module_init() != 0):
-        print("module_init failed")
-        return -1
+    def ADS1256_init(self):
+        rc_mod = config.module_init()
+        print(f"module_init rc={rc_mod}")
+        if rc_mod != 0:
+            print("module_init failed")
+            return -1
 
-    self.ADS1256_reset()
-    config.delay_ms(10)  # small settle time
+        self.ADS1256_reset()
+        config.delay_ms(10)
 
-    id = self.ADS1256_ReadChipID()
-    print(f"ADS1256_ReadChipID raw id=0x{id:X} ({id})")
-    if id == 3:
-        print("ID Read success")
-    else:
-        print("ID Read failed, continuing anyway")  # temporarily do NOT abort
-        # return -1    # <-- comment this out for now
+        id = self.ADS1256_ReadChipID()
+        print(f"ADS1256_ReadChipID raw id=0x{id:X} ({id})")
 
-    self.ADS1256_ConfigADC(
-        ADS1256_GAIN_E['ADS1256_GAIN_1'],
-        ADS1256_DRATE_E['ADS1256_30000SPS'],
-    )
-    return 0
+        if id == 3:
+            print("ID Read success")
+        else:
+            print(f"ID Read failed (got 0x{id:X}), continuing anyway")
+            # DO NOT return -1 here while you are debugging
+
+        self.ADS1256_ConfigADC(
+            ADS1256_GAIN_E['ADS1256_GAIN_1'],
+            ADS1256_DRATE_E['ADS1256_30000SPS'],
+        )
+
+        return 0
 
         
     def ADS1256_Read_ADC_Data(self):
