@@ -2,7 +2,7 @@ import config
 import RPi.GPIO as GPIO
 
 
-ScanMode = 0
+ScanMode = 1
 
 
 # gain channel
@@ -105,14 +105,39 @@ class ADS1256:
         if(i >= 400000):
             print ("Time Out ...\r\n")
         
-        
+     # Old chip ID read function.. Occasionally issues returning the wrong chip ID causing sample loop to fail
+     #   def ADS1256_ReadChipID(self):
+     #       self.ADS1256_WaitDRDY()
+     #       id = self.ADS1256_Read_data(REG_E['REG_STATUS'])
+     #       id = id[0] >> 4
+     #       # print 'ID',id
+     #       return id
+
     def ADS1256_ReadChipID(self):
+        # Wait for DRDY low so the device is ready
         self.ADS1256_WaitDRDY()
-        id = self.ADS1256_Read_data(REG_E['REG_STATUS'])
-        id = id[0] >> 4
-        # print 'ID',id
-        return id
-        
+
+        # Start SPI transaction
+        config.digital_write(self.cs_pin, GPIO.LOW)
+
+        # Send RREG command for STATUS register + count (1 register: N-1 = 0)
+        config.spi_writebyte([CMD['CMD_RREG'] | REG_E['REG_STATUS'], 0x00])
+
+        # Small t6 delay before reading STATUS
+        config.delay_ms(1)
+
+        status_bytes = config.spi_readbytes(1)
+
+        # End SPI transaction
+        config.digital_write(self.cs_pin, GPIO.HIGH)
+
+        status = status_bytes[0]
+        chip_id = (status >> 4) & 0x0F
+        print(f"STATUS=0x{status:02X}, chip_id=0x{chip_id:X}")
+        return chip_id
+
+
+
     #The configuration parameters of ADC, gain and data rate
     def ADS1256_ConfigADC(self, gain, drate):
         self.ADS1256_WaitDRDY()
@@ -147,20 +172,35 @@ class ADS1256:
             self.ADS1256_WriteReg(REG_E['REG_MUX'], (6 << 4) | 7) 	#DiffChannal   AIN6-AIN7
 
     def ADS1256_SetMode(self, Mode):
+        global ScanMode
         ScanMode = Mode
 
     def ADS1256_init(self):
-        if (config.module_init() != 0):
+        rc_mod = config.module_init()
+        print(f"module_init rc={rc_mod}")
+        if rc_mod != 0:
+            print("module_init failed")
             return -1
+
         self.ADS1256_reset()
+        config.delay_ms(10)
+
         id = self.ADS1256_ReadChipID()
-        if id == 3 :
-            print("ID Read success  ")
+        print(f"ADS1256_ReadChipID raw id=0x{id:X} ({id})")
+
+        if id == 3:
+            print("ID Read success")
         else:
-            print("ID Read failed   ")
-            return -1
-        self.ADS1256_ConfigADC(ADS1256_GAIN_E['ADS1256_GAIN_1'], ADS1256_DRATE_E['ADS1256_30000SPS'])
+            print(f"ID Read failed (got 0x{id:X}), continuing anyway")
+            # DO NOT return -1 here while you are debugging
+
+        self.ADS1256_ConfigADC(
+            ADS1256_GAIN_E['ADS1256_GAIN_1'],
+            ADS1256_DRATE_E['ADS1256_30000SPS'],
+        )
+
         return 0
+
         
     def ADS1256_Read_ADC_Data(self):
         self.ADS1256_WaitDRDY()
@@ -210,4 +250,44 @@ class ADS1256:
         for i in range(0,8,1):
             ADC_Value[i] = self.ADS1256_GetChannalValue(i)
         return ADC_Value
+
+    def ADS1256_StartContinuousDiff(self, diff_channel, gain, drate):
+        """
+        Configure ADC and enter continuous conversion (RDATAC) on one diff channel.
+        """
+        # Stop any previous continuous read
+        self.ADS1256_WriteCmd(CMD['CMD_SDATAC'])
+
+        # Configure ADC core (gain + data rate)
+        self.ADS1256_ConfigADC(gain, drate)
+
+        # Select differential mux
+        self.ADS1256_SetDiffChannal(diff_channel)
+
+        # Sync + wakeup to start conversions
+        self.ADS1256_WriteCmd(CMD['CMD_SYNC'])
+        config.delay_ms(1)
+        self.ADS1256_WriteCmd(CMD['CMD_WAKEUP'])
+        config.delay_ms(1)
+
+        # Enter continuous data mode
+        self.ADS1256_WriteCmd(CMD['CMD_RDATAC'])
+        # From now on, DO NOT send CMD_RDATA until you call CMD_SDATAC again
+
+    def ADS1256_ReadContinuousSample(self):
+        """
+        Read one 24-bit sample in RDATAC mode.
+        Assumes CMD_RDATAC has already been sent.
+        """
+        self.ADS1256_WaitDRDY()
+
+        config.digital_write(self.cs_pin, GPIO.LOW)
+        buf = config.spi_readbytes(3)
+        config.digital_write(self.cs_pin, GPIO.HIGH)
+
+        read = (buf[0] << 16) | (buf[1] << 8) | buf[2]
+        if read & 0x800000:
+            read -= 1 << 24  # sign extend 24-bit two's complement
+        return read
+
 ### END OF FILE ###
