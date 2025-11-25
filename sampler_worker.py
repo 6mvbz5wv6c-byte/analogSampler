@@ -69,13 +69,28 @@ def sampler_process_main(frame_queue):
     """
     try:
         adc = ADS1256.ADS1256()
-        rc = adc.ADS1256_init()
-        print(f"[sampler_proc] ADS1256_init rc={rc}")
-        if rc != 0:
-            raise RuntimeError("ADS1256 init failed")
+        
+        # Old init method
+        #rc = adc.ADS1256_init()
+        #print(f"[sampler_proc] ADS1256_init rc={rc}")
+        #if rc != 0:
+        #    raise RuntimeError("ADS1256 init failed")
+
+        # new init method with retry timer
+        attempt = 1
+        while True:
+            rc = adc.ADS1256_init()
+            print(f"[sampler_proc] ADS1256_init attempt {attempt} rc={rc}")
+            if rc == 0:
+                print("[sampler_proc] ADS1256 init succeeded")
+                break
+            print("[sampler_proc] ADS1256 init failed, retrying in 30 seconds...")
+            attempt += 1
+            time.sleep(30)
+
 
         # Differential mode
-        adc.ADS1256_SetMode(1)
+        adc.ADS1256_SetMode(0)
 
         # Configure and enter continuous conversion on the chosen diff channel
         adc.ADS1256_StartContinuousDiff(
