@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Local Listener Panel</title>
+  <title>Pigboy Geophone Oscilloscope</title>
   <style>
     body {
       margin: 0;
@@ -138,85 +138,80 @@
     }
 
     function drawTrace() {
-      const w = canvas.width;
-      const h = canvas.height;
-      const plotH = h - AXIS_HEIGHT;
+  const w = canvas.width;
+  const h = canvas.height;
+  const plotH = h - AXIS_HEIGHT;
 
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
 
-      if (!tData.length) {
-        formatRange();
-        return;
-      }
+  if (!tData.length) {
+    formatRange();
+    return;
+  }
 
-      clampView();
-      formatRange();
-      drawGrid(w, h);
+  clampView();
+  formatRange();
+  drawGrid(w, h);
 
-      const yMid = plotH / 2;
+  const yMid = plotH / 2;
 
-      // Fixed mapping: Y_MIN → bottom, Y_MAX → top
-      const yRange = Y_MAX - Y_MIN;
-      const scale = plotH / yRange;   // pixels per count
+  // Center baseline (0 counts)
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, yMid + 0.5);
+  ctx.lineTo(w, yMid + 0.5);
+  ctx.stroke();
 
-      // Center baseline
-      ctx.strokeStyle = '#333';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, yMid + 0.5);
-      ctx.lineTo(w, yMid + 0.5);
-      ctx.stroke();
+  // Fixed linear mapping counts -> pixels
+  const denom = (Y_MAX - Y_MIN) || 1;      // avoid /0
+  const scale = plotH / denom;            // counts * scale = pixels
 
-      ctx.strokeStyle = '#0f0';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
+  ctx.strokeStyle = '#0f0';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
 
-      let started = false;
+  let started = false;
 
-      for (let i = 0; i < tData.length; i++) {
-        const t = tData[i];
-        if (t < viewStart || t > viewStart + viewSpan) continue;
+  for (let i = 0; i < tData.length; i++) {
+    const t = tData[i];
+    if (t < viewStart || t > viewStart + viewSpan) continue;
 
-        const xNorm = (t - viewStart) / viewSpan;
-        const x = xNorm * w;
+    const xNorm = (t - viewStart) / viewSpan;
+    const x = xNorm * w;
 
-        let v = geoData[i];
-        if (!Number.isFinite(v)) continue;
+    let v = geoData[i];       // raw signed counts
 
-        // clamp to fixed range
-        if (v < Y_MIN) v = Y_MIN;
-        if (v > Y_MAX) v = Y_MAX;
+    // Hard clamp to display window
+    if (v < Y_MIN) v = Y_MIN;
+    if (v > Y_MAX) v = Y_MAX;
 
-        // map counts to pixels:
-        //   v = Y_MAX -> y ≈ 0 (top)
-        //   v = 0     -> y ≈ middle
-        //   v = Y_MIN -> y ≈ plotH (bottom)
-        const y = (Y_MAX - v) * scale;
+    // Map Y_MIN..Y_MAX -> bottom..top
+    const y = plotH - (v - Y_MIN) * scale;
 
-        if (!started) {
-          ctx.moveTo(x, y);
-          started = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-
-      if (started) {
-        ctx.stroke();
-      }
-
-      if (isSelecting) {
-        ctx.fillStyle = 'rgba(0, 128, 255, 0.2)';
-        ctx.strokeStyle = 'rgba(0, 128, 255, 0.7)';
-        const x0 = Math.min(selectStartX, selectCurrentX);
-        const x1 = Math.max(selectStartX, selectCurrentX);
-        ctx.fillRect(x0, 0, x1 - x0, plotH);
-        ctx.strokeRect(x0 + 0.5, 0.5, x1 - x0, plotH - 1);
-      }
-
-      drawTimeAxis(plotH, w);
+    if (!started) {
+      ctx.moveTo(x, y);
+      started = true;
+    } else {
+      ctx.lineTo(x, y);
     }
+  }
+
+  if (started) ctx.stroke();
+
+  if (isSelecting) {
+    ctx.fillStyle = 'rgba(0, 128, 255, 0.2)';
+    ctx.strokeStyle = 'rgba(0, 128, 255, 0.7)';
+    const x0 = Math.min(selectStartX, selectCurrentX);
+    const x1 = Math.max(selectStartX, selectCurrentX);
+    ctx.fillRect(x0, 0, x1 - x0, plotH);
+    ctx.strokeRect(x0 + 0.5, 0.5, x1 - x0, plotH - 1);
+  }
+
+  drawTimeAxis(plotH, w);
+}
+
 
 
     function drawTimeAxis(plotH, w) {
