@@ -8,11 +8,11 @@
     :root {
       --bg: #111;
       --panel: #1b1b1b;
-      --accent: #0f0;
+      --accent: #6cff5f;
       --grid: #222;
       --text: #e8e8e8;
-      --warn: #f80;
-      --error: #f55;
+      --warn: #f9a825;
+      --error: #ef5350;
     }
 
     * { box-sizing: border-box; }
@@ -35,10 +35,12 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      letter-spacing: 0.3px;
     }
 
     #status {
       font-weight: 700;
+      transition: color 0.2s ease;
     }
 
     #container {
@@ -53,6 +55,36 @@
       width: 100%;
       max-width: 1100px;
       height: 480px;
+    }
+
+    .uplot {
+      background: #0a0a0a;
+    }
+
+    .u-legend {
+      color: var(--text);
+      background: rgba(17, 17, 17, 0.9);
+      border: 1px solid #242424;
+      border-radius: 6px;
+      padding: 6px 8px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    }
+
+    .u-legend .u-label {
+      font-weight: 600;
+      font-size: 12px;
+      letter-spacing: 0.2px;
+    }
+
+    .u-legend .u-value {
+      font-family: "Roboto Mono", monospace;
+      font-size: 12px;
+      color: #c7c7c7;
+    }
+
+    .u-legend .u-series:nth-child(2) .u-label,
+    .u-legend .u-series:nth-child(2) .u-value {
+      color: var(--accent);
     }
   </style>
 </head>
@@ -78,44 +110,69 @@
     };
 
     function initChart() {
-      const plot = new uPlot({
+      state.plot = new uPlot({
         width: chartEl.clientWidth,
         height: chartEl.clientHeight,
         background: '#000',
+        scales: {
+          x: { time: false },
+          y: { auto: true },
+        },
         axes: [
-          { label: 'Seconds', stroke: '#999' },
-          { label: 'Volts', stroke: '#999' }
+          {
+            label: 'Seconds',
+            stroke: '#a0a0a0',
+            grid: { stroke: '#1f1f1f', width: 1 },
+          },
+          {
+            label: 'Volts',
+            stroke: '#a0a0a0',
+            grid: { stroke: '#1f1f1f', width: 1 },
+          },
         ],
+        legend: {
+          show: true,
+          live: true,
+        },
         series: [
           {},
-          { label: 'Geophone', stroke: '#0f0', width: 1.5 }
+          { label: 'Geophone', stroke: '#6cff5f', width: 1.5 },
         ],
-        resize: () => ({
-          width: chartEl.clientWidth,
-          height: chartEl.clientHeight,
-        }),
+        hooks: {
+          setSize: [() => state.plot?.redraw?.()],
+        },
       }, [[], []], chartEl);
+    }
 
-      state.plot = plot;
+    function dropExpiredSamples(cutoff) {
+      if (!state.times.length) return;
+      let startIdx = 0;
+      const tArr = state.times;
+      while (startIdx < tArr.length && tArr[startIdx] < cutoff) {
+        startIdx++;
+      }
+      if (startIdx > 0) {
+        state.times = state.times.slice(startIdx);
+        state.geo = state.geo.slice(startIdx);
+      }
     }
 
     function updateChart(newTimes, newGeo) {
-      if (!state.plot) return;
+      if (!state.plot || !newTimes.length || !newGeo.length) return;
 
       state.times.push(...newTimes);
       state.geo.push(...newGeo);
 
-      if (state.times.length === 0) return;
-
       const latest = state.times[state.times.length - 1];
       const cutoff = latest - WINDOW_SECONDS;
 
-      while (state.times.length && state.times[0] < cutoff) {
-        state.times.shift();
-        state.geo.shift();
-      }
+      dropExpiredSamples(cutoff);
 
-      const displayTimes = state.times.map(t => t - cutoff);
+      if (!state.times.length) return;
+
+      const windowStart = Math.max(cutoff, state.times[0]);
+      const displayTimes = state.times.map((t) => t - windowStart);
+
       state.plot.setData([displayTimes, state.geo]);
     }
 
@@ -143,8 +200,8 @@
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          const t = msg.t || [];
-          const geo = msg.geo || [];
+          const t = Array.isArray(msg.t) ? msg.t : [];
+          const geo = Array.isArray(msg.geo) ? msg.geo : [];
           if (t.length && geo.length) {
             updateChart(t, geo);
           }
