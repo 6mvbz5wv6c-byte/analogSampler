@@ -3,27 +3,46 @@
 <head>
   <meta charset="UTF-8">
   <title>Pigboy Geophone Oscilloscope</title>
+  <link rel="stylesheet" href="/static/vendor/uplot-lite.css">
   <style>
+    :root {
+      --bg: #111;
+      --panel: #1b1b1b;
+      --accent: #6cff5f;
+      --grid: #222;
+      --text: #e8e8e8;
+      --warn: #f9a825;
+      --error: #ef5350;
+    }
+
+    * { box-sizing: border-box; }
+
     body {
       margin: 0;
-      font-family: sans-serif;
-      background: #111;
-      color: #eee;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
       display: flex;
       flex-direction: column;
       height: 100vh;
     }
+
     header {
-      padding: 8px 12px;
-      background: #222;
+      padding: 10px 14px;
+      background: var(--panel);
       font-size: 14px;
+      border-bottom: 1px solid #2a2a2a;
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
+      letter-spacing: 0.3px;
     }
+
     #status {
-      font-weight: bold;
+      font-weight: 700;
+      transition: color 0.2s ease;
     }
+
     #container {
       flex: 1;
       display: flex;
@@ -35,245 +54,132 @@
       display: flex;
       gap: 8px;
       align-items: center;
-      color: #ccc;
-      font-size: 13px;
+      padding: 16px;
     }
-    button {
-      background: #333;
-      color: #eee;
-      border: 1px solid #444;
-      border-radius: 4px;
-      padding: 6px 10px;
-      cursor: pointer;
-    }
-    button:hover { background: #444; }
-    canvas {
-      border: 1px solid #444;
-      background: #000;
+
+    #chart {
       width: 100%;
-      height: 420px;
+      max-width: 1100px;
+      height: 480px;
+    }
+
+    .uplot {
+      background: #0a0a0a;
+    }
+
+    .u-legend {
+      color: var(--text);
+      background: rgba(17, 17, 17, 0.9);
+      border: 1px solid #242424;
+      border-radius: 6px;
+      padding: 6px 8px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+    }
+
+    .u-legend .u-label {
+      font-weight: 600;
+      font-size: 12px;
+      letter-spacing: 0.2px;
+    }
+
+    .u-legend .u-value {
+      font-family: "Roboto Mono", monospace;
+      font-size: 12px;
+      color: #c7c7c7;
+    }
+
+    .u-legend .u-series:nth-child(2) .u-label,
+    .u-legend .u-series:nth-child(2) .u-value {
+      color: var(--accent);
     }
   </style>
 </head>
 <body>
   <header>
-    <span>Pigboy Geophone Monitor</span>
-    <span id="status">Connecting...</span>
+    <div>Pigboy Geophone Monitor</div>
+    <div id="status">Connecting...</div>
   </header>
   <div id="container">
-    <div id="controls">
-      <button id="follow">Jump to Live</button>
-      <span>Drag to select a zoom window, Shift+Drag to pan. Buffer: 45 s.</span>
-      <span id="view"></span>
-    </div>
-    <canvas id="scope" width="1200" height="420"></canvas>
+    <div id="chart"></div>
   </div>
 
+  <script src="/static/vendor/uplot-lite.js"></script>
   <script>
-    const canvas = document.getElementById('scope');
-    const ctx = canvas.getContext('2d');
     const statusEl = document.getElementById('status');
-    const viewEl = document.getElementById('view');
-    const followBtn = document.getElementById('follow');
+    const chartEl = document.getElementById('chart');
 
-    const BUFFER_SECONDS = 45;
-    const DEFAULT_VIEW_SECONDS = 45;
-    //const Y_SCALE = 500000; // constant vertical scale in ADC counts
-    const Y_MIN = -8000000;
-    const Y_MAX =  8000000;
-    const AXIS_HEIGHT = 28;
+    const WINDOW_SECONDS = 10;
+    const state = {
+      times: [],
+      geo: [],
+      plot: null,
+    };
 
-    let tData = [];
-    let geoData = [];
-    let viewStart = 0;
-    let viewSpan = DEFAULT_VIEW_SECONDS;
-    let followLive = true;
-    let isPanning = false;
-    let panStartX = 0;
-    let panStartView = 0;
-    let isSelecting = false;
-    let selectStartX = 0;
-    let selectCurrentX = 0;
-    let t0Abs = null;
-
-    function clampView() {
-      if (tData.length === 0) return;
-      const minT = tData[0];
-      const maxT = tData[tData.length - 1];
-      const span = Math.min(viewSpan, BUFFER_SECONDS, Math.max(maxT - minT, DEFAULT_VIEW_SECONDS));
-      viewSpan = Math.max(0.5, Math.min(span, BUFFER_SECONDS));
-
-      const maxStart = maxT - viewSpan;
-      viewStart = Math.max(minT, Math.min(viewStart, maxStart));
+    function initChart() {
+      state.plot = new uPlot({
+        width: chartEl.clientWidth,
+        height: chartEl.clientHeight,
+        background: '#000',
+        scales: {
+          x: { time: false },
+          y: { auto: true },
+        },
+        axes: [
+          {
+            label: 'Seconds',
+            stroke: '#a0a0a0',
+            grid: { stroke: '#1f1f1f', width: 1 },
+          },
+          {
+            label: 'Volts',
+            stroke: '#a0a0a0',
+            grid: { stroke: '#1f1f1f', width: 1 },
+          },
+        ],
+        legend: {
+          show: true,
+          live: true,
+        },
+        series: [
+          {},
+          { label: 'Geophone', stroke: '#6cff5f', width: 1.5 },
+        ],
+        hooks: {
+          setSize: [() => state.plot?.redraw?.()],
+        },
+      }, [[], []], chartEl);
     }
 
-    function formatRange() {
-      const startSec = viewStart.toFixed(2);
-      const endSec = (viewStart + viewSpan).toFixed(2);
-      const spanSec = viewSpan.toFixed(2);
-      viewEl.textContent = `View: ${startSec}s – ${endSec}s (Δ ${spanSec}s)`;
-    }
-
-    function biasAndScale(values) {
-      if (!values.length) return [];
-      const mean = values.reduce((acc, v) => acc + v, 0) / values.length;
-      return values.map((v) => v - mean);
-    }
-
-    function drawGrid(w, h) {
-      ctx.strokeStyle = '#222';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      const gridX = 100;
-      const gridY = 80;
-      for (let x = 0; x <= w; x += gridX) {
-        ctx.moveTo(x + 0.5, 0);
-        ctx.lineTo(x + 0.5, h - AXIS_HEIGHT);
+    function dropExpiredSamples(cutoff) {
+      if (!state.times.length) return;
+      let startIdx = 0;
+      const tArr = state.times;
+      while (startIdx < tArr.length && tArr[startIdx] < cutoff) {
+        startIdx++;
       }
-      for (let y = 0; y <= h - AXIS_HEIGHT; y += gridY) {
-        ctx.moveTo(0, y + 0.5);
-        ctx.lineTo(w, y + 0.5);
+      if (startIdx > 0) {
+        state.times = state.times.slice(startIdx);
+        state.geo = state.geo.slice(startIdx);
       }
-      ctx.stroke();
     }
 
-    function drawTrace() {
-  const w = canvas.width;
-  const h = canvas.height;
-  const plotH = h - AXIS_HEIGHT;
+    function updateChart(newTimes, newGeo) {
+      if (!state.plot || !newTimes.length || !newGeo.length) return;
 
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, w, h);
+      state.times.push(...newTimes);
+      state.geo.push(...newGeo);
 
-  if (!tData.length) {
-    formatRange();
-    return;
-  }
+      const latest = state.times[state.times.length - 1];
+      const cutoff = latest - WINDOW_SECONDS;
 
-  clampView();
-  formatRange();
-  drawGrid(w, h);
+      dropExpiredSamples(cutoff);
 
-  const yMid = plotH / 2;
+      if (!state.times.length) return;
 
-  // Center baseline (0 counts)
-  ctx.strokeStyle = '#333';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, yMid + 0.5);
-  ctx.lineTo(w, yMid + 0.5);
-  ctx.stroke();
+      const windowStart = Math.max(cutoff, state.times[0]);
+      const displayTimes = state.times.map((t) => t - windowStart);
 
-  // Fixed linear mapping counts -> pixels
-  const denom = (Y_MAX - Y_MIN) || 1;      // avoid /0
-  const scale = plotH / denom;            // counts * scale = pixels
-
-  ctx.strokeStyle = '#0f0';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-
-  let started = false;
-
-  for (let i = 0; i < tData.length; i++) {
-    const t = tData[i];
-    if (t < viewStart || t > viewStart + viewSpan) continue;
-
-    const xNorm = (t - viewStart) / viewSpan;
-    const x = xNorm * w;
-
-    let v = geoData[i];       // raw signed counts
-
-    // Hard clamp to display window
-    if (v < Y_MIN) v = Y_MIN;
-    if (v > Y_MAX) v = Y_MAX;
-
-    // Map Y_MIN..Y_MAX -> bottom..top
-    const y = plotH - (v - Y_MIN) * scale;
-
-    if (!started) {
-      ctx.moveTo(x, y);
-      started = true;
-    } else {
-      ctx.lineTo(x, y);
-    }
-  }
-
-  if (started) ctx.stroke();
-
-  if (isSelecting) {
-    ctx.fillStyle = 'rgba(0, 128, 255, 0.2)';
-    ctx.strokeStyle = 'rgba(0, 128, 255, 0.7)';
-    const x0 = Math.min(selectStartX, selectCurrentX);
-    const x1 = Math.max(selectStartX, selectCurrentX);
-    ctx.fillRect(x0, 0, x1 - x0, plotH);
-    ctx.strokeRect(x0 + 0.5, 0.5, x1 - x0, plotH - 1);
-  }
-
-  drawTimeAxis(plotH, w);
-}
-
-
-
-    function drawTimeAxis(plotH, w) {
-      if (tData.length === 0 || t0Abs === null) return;
-
-      const absStart = t0Abs + viewStart;
-      const absEnd = absStart + viewSpan;
-      const avgTime = (absStart + absEnd) / 2;
-      const ticks = 6;
-
-      ctx.strokeStyle = '#555';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, plotH + 0.5);
-      ctx.lineTo(w, plotH + 0.5);
-      ctx.stroke();
-
-      ctx.fillStyle = '#bbb';
-      ctx.font = '12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-
-      for (let i = 0; i < ticks; i++) {
-        const frac = i / (ticks - 1);
-        const x = frac * w;
-        const tTick = absStart + frac * viewSpan;
-        ctx.fillText(formatTimestamp(tTick), x, plotH + 6);
-      }
-
-      ctx.textAlign = 'right';
-      ctx.fillText('Avg:', w - 56, plotH + 6);
-      ctx.textAlign = 'left';
-      ctx.fillText(formatTimestamp(avgTime), w - 52, plotH + 6);
-    }
-
-    function formatTimestamp(seconds) {
-      const date = new Date(seconds * 1000);
-      const timeString = date.toISOString().split('T')[1].replace('Z', '');
-      return `${timeString}`;
-    }
-
-    function setLiveView() {
-      if (!tData.length) return;
-      const maxT = tData[tData.length - 1];
-      viewSpan = Math.min(viewSpan, BUFFER_SECONDS);
-      viewStart = Math.max(tData[0], maxT - viewSpan);
-      followLive = true;
-      drawTrace();
-    }
-
-    function handleNewData(t0, t, geo) {
-      tData = t;
-      //geoData = biasAndScale(geo);
-      geoData = geo;
-      t0Abs = t0;
-
-      if (followLive) {
-        viewSpan = Math.min(Math.max(viewSpan, DEFAULT_VIEW_SECONDS), BUFFER_SECONDS);
-        const maxT = tData[tData.length - 1];
-        viewStart = Math.max(tData[0], maxT - viewSpan);
-      }
-      drawTrace();
+      state.plot.setData([displayTimes, state.geo]);
     }
 
     canvas.addEventListener('mousedown', (event) => {
@@ -341,30 +247,35 @@
 
       ws.onopen = () => {
         statusEl.textContent = 'Connected';
-        statusEl.style.color = '#0f0';
+        statusEl.style.color = 'var(--accent)';
       };
 
       ws.onclose = () => {
         statusEl.textContent = 'Disconnected, retrying...';
-        statusEl.style.color = '#f80';
+        statusEl.style.color = 'var(--warn)';
         setTimeout(connectWS, 2000);
       };
 
       ws.onerror = () => {
         statusEl.textContent = 'Error';
-        statusEl.style.color = '#f00';
+        statusEl.style.color = 'var(--error)';
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          handleNewData(msg.t0, msg.t, msg.geo);
+          const t = Array.isArray(msg.t) ? msg.t : [];
+          const geo = Array.isArray(msg.geo) ? msg.geo : [];
+          if (t.length && geo.length) {
+            updateChart(t, geo);
+          }
         } catch (e) {
           console.error('Bad message', e);
         }
       };
     }
 
+    initChart();
     connectWS();
     drawTrace();
   </script>

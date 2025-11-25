@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
+import contextlib
+import os
 import socket
 import struct
 from collections import deque
@@ -18,10 +20,19 @@ class RingBuffer:
         self.max_samples = max_samples
         self.t_abs = deque(maxlen=max_samples)
         self.geo = deque(maxlen=max_samples)
+        self.seq_start = 0
+        self.seq_next = 0
 
     def add_frame(self, t_abs, geo):
+        len_before = len(self.t_abs)
+        len_new = len(t_abs)
+        dropped = max(0, len_before + len_new - self.max_samples)
+
         self.t_abs.extend(t_abs)
         self.geo.extend(geo)
+
+        self.seq_next += len_new
+        self.seq_start += dropped
 
     def snapshot(self):
         if not self.t_abs:
@@ -31,6 +42,19 @@ class RingBuffer:
         t_rel = t - t0
         geo = np.array(self.geo, dtype=np.float32)
         return t_rel, geo
+
+    def get_since(self, seq):
+        if not self.t_abs:
+            return np.array([]), np.array([]), self.seq_start
+
+        offset = max(0, seq - self.seq_start)
+        if offset >= len(self.t_abs):
+            return np.array([]), np.array([]), self.seq_start + len(self.t_abs)
+
+        t = np.array(list(self.t_abs)[offset:], dtype=np.float64)
+        geo = np.array(list(self.geo)[offset:], dtype=np.float32)
+        next_seq = self.seq_start + len(self.t_abs)
+        return t, geo, next_seq
 
 
 buf = RingBuffer(max_samples=20_000)
@@ -77,21 +101,25 @@ async def ws_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
+    last_seq = buf.seq_start
+
     try:
         while True:
             await asyncio.sleep(0.1)  # 10 Hz update
-            t, geo = buf.snapshot()
+            t, geo, next_seq = buf.get_since(last_seq)
             if t.size == 0:
                 continue
 
-            # Downsample for UI (max 1000 points)
+            last_seq = next_seq
+
+            # Downsample only the new slice (max ~1000 points per burst)
             step = max(1, len(t) // 1000)
             t_ds = t[::step]
             g_ds = geo[::step]
 
             await ws.send_json({
                 "t": t_ds.tolist(),
-                "geo": g_ds.tolist()
+                "geo": g_ds.tolist(),
             })
     except asyncio.CancelledError:
         pass
@@ -110,8 +138,7 @@ async def init_app():
     app = web.Application()
     app.router.add_get("/", index_handler)
     app.router.add_get("/ws", ws_handler)
-    # If you later add more assets (JS/CSS), you can do:
-    # app.router.add_static("/static", path="static")
+    app.router.add_static("/static", path="static")
     return app
 
 
@@ -136,5 +163,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    import contextlib
     asyncio.run(main())
