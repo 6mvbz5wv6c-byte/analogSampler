@@ -1,0 +1,22 @@
+.uplot {
+  position: relative;
+  background: #000;
+  border: 1px solid #444;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.6);
+}
+
+.uplot canvas {
+  display: block;
+}
+
+.uplot-legend {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #0f0;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid #333;
+  border-radius: 4px;
+}

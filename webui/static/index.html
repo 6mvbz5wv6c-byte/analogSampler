@@ -3,108 +3,120 @@
 <head>
   <meta charset="UTF-8">
   <title>Pigboy Geophone Oscilloscope</title>
+  <link rel="stylesheet" href="/static/vendor/uplot-lite.css">
   <style>
+    :root {
+      --bg: #111;
+      --panel: #1b1b1b;
+      --accent: #0f0;
+      --grid: #222;
+      --text: #e8e8e8;
+      --warn: #f80;
+      --error: #f55;
+    }
+
+    * { box-sizing: border-box; }
+
     body {
       margin: 0;
-      font-family: sans-serif;
-      background: #111;
-      color: #eee;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
       display: flex;
       flex-direction: column;
       height: 100vh;
     }
+
     header {
-      padding: 8px 12px;
-      background: #222;
+      padding: 10px 14px;
+      background: var(--panel);
       font-size: 14px;
+      border-bottom: 1px solid #2a2a2a;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
     }
+
     #status {
-      float: right;
-      font-weight: bold;
+      font-weight: 700;
     }
+
     #container {
       flex: 1;
       display: flex;
       justify-content: center;
       align-items: center;
+      padding: 16px;
     }
-    canvas {
-      border: 1px solid #444;
-      background: #000;
+
+    #chart {
+      width: 100%;
+      max-width: 1100px;
+      height: 480px;
     }
   </style>
 </head>
 <body>
   <header>
-    Pigboy Geophone Monitor
-    <span id="status">Connecting...</span>
+    <div>Pigboy Geophone Monitor</div>
+    <div id="status">Connecting...</div>
   </header>
   <div id="container">
-    <canvas id="scope" width="1000" height="400"></canvas>
+    <div id="chart"></div>
   </div>
 
+  <script src="/static/vendor/uplot-lite.js"></script>
   <script>
-    const canvas = document.getElementById('scope');
-    const ctx = canvas.getContext('2d');
     const statusEl = document.getElementById('status');
+    const chartEl = document.getElementById('chart');
 
-    function drawTrace(t, geo) {
-      if (!t || t.length === 0) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        return;
+    const WINDOW_SECONDS = 10;
+    const state = {
+      times: [],
+      geo: [],
+      plot: null,
+    };
+
+    function initChart() {
+      const plot = new uPlot({
+        width: chartEl.clientWidth,
+        height: chartEl.clientHeight,
+        background: '#000',
+        axes: [
+          { label: 'Seconds', stroke: '#999' },
+          { label: 'Volts', stroke: '#999' }
+        ],
+        series: [
+          {},
+          { label: 'Geophone', stroke: '#0f0', width: 1.5 }
+        ],
+        resize: () => ({
+          width: chartEl.clientWidth,
+          height: chartEl.clientHeight,
+        }),
+      }, [[], []], chartEl);
+
+      state.plot = plot;
+    }
+
+    function updateChart(newTimes, newGeo) {
+      if (!state.plot) return;
+
+      state.times.push(...newTimes);
+      state.geo.push(...newGeo);
+
+      if (state.times.length === 0) return;
+
+      const latest = state.times[state.times.length - 1];
+      const cutoff = latest - WINDOW_SECONDS;
+
+      while (state.times.length && state.times[0] < cutoff) {
+        state.times.shift();
+        state.geo.shift();
       }
 
-      const w = canvas.width;
-      const h = canvas.height;
-
-      // Clear
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, w, h);
-
-      // Determine min/max for auto-scale
-      let ymin = Infinity, ymax = -Infinity;
-      for (let i = 0; i < geo.length; i++) {
-        const v = geo[i];
-        if (v < ymin) ymin = v;
-        if (v > ymax) ymax = v;
-      }
-      if (ymin === ymax) {
-        ymin -= 1;
-        ymax += 1;
-      }
-
-      const t0 = t[0];
-      const t1 = t[t.length - 1];
-      const dt = t1 - t0 || 1;
-
-      // Draw grid
-      ctx.strokeStyle = '#222';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let x = 0; x <= w; x += 100) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, h);
-      }
-      for (let y = 0; y <= h; y += 100) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-      }
-      ctx.stroke();
-
-      // Draw trace
-      ctx.strokeStyle = '#0f0';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      for (let i = 0; i < geo.length; i++) {
-        const tx = (t[i] - t0) / dt;  // 0..1
-        const ty = (geo[i] - ymin) / (ymax - ymin); // 0..1
-        const x = tx * w;
-        const y = h - ty * h;
-
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
+      const displayTimes = state.times.map(t => t - cutoff);
+      state.plot.setData([displayTimes, state.geo]);
     }
 
     function connectWS() {
@@ -114,30 +126,35 @@
 
       ws.onopen = () => {
         statusEl.textContent = 'Connected';
-        statusEl.style.color = '#0f0';
+        statusEl.style.color = 'var(--accent)';
       };
 
       ws.onclose = () => {
         statusEl.textContent = 'Disconnected, retrying...';
-        statusEl.style.color = '#f80';
+        statusEl.style.color = 'var(--warn)';
         setTimeout(connectWS, 2000);
       };
 
       ws.onerror = () => {
         statusEl.textContent = 'Error';
-        statusEl.style.color = '#f00';
+        statusEl.style.color = 'var(--error)';
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          drawTrace(msg.t, msg.geo);
+          const t = msg.t || [];
+          const geo = msg.geo || [];
+          if (t.length && geo.length) {
+            updateChart(t, geo);
+          }
         } catch (e) {
           console.error('Bad message', e);
         }
       };
     }
 
+    initChart();
     connectWS();
   </script>
 </body>
