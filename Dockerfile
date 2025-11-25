@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # App files
 WORKDIR /app
 # (add any other modules you use, e.g., config.py, ADS1256.py, etc.)
-COPY main.py requirements.txt ADS1256.py config.py ./
+COPY main.py sampler_worker.py requirements.txt ADS1256.py config.py ./
 
 # Python deps
 RUN pip install --no-cache-dir -r requirements.txt
